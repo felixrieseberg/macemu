@@ -169,6 +169,7 @@ bool InitAll(const char *vmdir)
 	// Init audio
 	AudioInit();
 
+	puts("VideoInit");
 	// Init video
 	if (!VideoInit(ROMVersion == ROM_VERSION_64K || ROMVersion == ROM_VERSION_PLUS || ROMVersion == ROM_VERSION_CLASSIC))
 		return false;
@@ -182,11 +183,13 @@ bool InitAll(const char *vmdir)
 
 #if EMULATED_68K
 	// Init 680x0 emulation (this also activates the memory system which is needed for PatchROM())
+	puts("Init680x0");
 	if (!Init680x0())
 		return false;
 #endif
 
 	// Install ROM patches
+	puts("PatchROM");
 	if (!PatchROM()) {
 		ErrorAlert(STR_UNSUPPORTED_ROM_TYPE_ERR);
 		return false;

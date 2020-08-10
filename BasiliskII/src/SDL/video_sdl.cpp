@@ -64,7 +64,15 @@
 #include "vm_alloc.h"
 
 #define DEBUG 0
+#define DEBUG 1
 #include "debug.h"
+
+#define REUSE_VIDEO_BUFFER 1
+#define BROWSER_VIDEO 1
+
+#ifdef EMSCRIPTEN
+#include <emscripten.h>
+#endif
 
 // Supported video modes
 using std::vector;
@@ -435,6 +443,10 @@ static void sdl_display_dimensions(int &width, int &height)
 
 static inline int sdl_display_width(void)
 {
+#ifdef EMSCRIPTEN
+	return 1600;
+#endif
+
 	int width, height;
 	sdl_display_dimensions(width, height);
 	return width;
@@ -442,6 +454,10 @@ static inline int sdl_display_width(void)
 
 static inline int sdl_display_height(void)
 {
+#ifdef EMSCRIPTEN
+	return 1200;
+#endif
+
 	int width, height;
 	sdl_display_dimensions(width, height);
 	return height;
@@ -502,6 +518,8 @@ static void set_mac_frame_buffer(SDL_monitor_desc &monitor, int depth)
 		monitor.set_mac_frame_base(MacFrameBaseMac24Bit);
 	else
 		monitor.set_mac_frame_base(MacFrameBaseMac);
+	
+	printf("monitor.set_mac_frame_base(MacFrameBaseMac) MacFrameLayout=%d\n", MacFrameLayout);
 
 	// Set variables used by UAE memory banking
 	const VIDEO_MODE &mode = monitor.get_current_mode();
@@ -509,6 +527,7 @@ static void set_mac_frame_buffer(SDL_monitor_desc &monitor, int depth)
 	MacFrameSize = VIDEO_MODE_ROW_BYTES * VIDEO_MODE_Y;
 	InitFrameBufferMapping();
 #else
+	
 	monitor.set_mac_frame_base(Host2MacAddr(the_buffer));
 #endif
 	D(bug("monitor.mac_frame_base = %08x\n", monitor.get_mac_frame_base()));
@@ -580,6 +599,46 @@ static void migrate_screen_prefs(void)
 #endif
 }
 
+// Map RGB color to pixel value (this only works in TrueColor/DirectColor visuals)
+static inline uint32 map_rgb(uint8 red, uint8 green, uint8 blue, bool fix_byte_order = false)
+{
+  uint32 val = (red&0xff)|(green&0xff)<<8|(blue&0xff)<<16|0xff000000;
+  return val;
+
+	// uint32 val = ((red >> 8) << 0) | ((green >> 8) << 0) | ((blue >> 8) << 0);
+
+	if (fix_byte_order) {
+		// We have to fix byte order in the ExpandMap[]
+		// NOTE: this is only an optimization since Screen_blitter_init()
+		// could be arranged to choose an NBO or OBO (with
+		// byteswapping) Blit_Expand_X_To_Y() function
+		switch (32) {
+		case 15: case 16:
+			val = do_byteswap_16(val);
+			break;
+		case 24: case 32:
+			val = do_byteswap_32(val);
+			break;
+		}
+	}
+	return val;
+}
+
+static uint8 *browser_pixels = NULL;
+
+uint8 *alloc_browser_pixels(int32 size_to_copy) {
+	if (browser_pixels) {
+		return browser_pixels;
+	}
+	printf("actually allocating browser pixels\n");
+	return (uint8 *)malloc(size_to_copy * sizeof(uint8));
+}
+
+__attribute__((noinline))
+void free_browser_pixels(uint8 *browser_pixels) {
+	free(browser_pixels);
+}
+
 void update_sdl_video(SDL_Surface *screen, Sint32 x, Sint32 y, Sint32 w, Sint32 h)
 {
 	SDL_UpdateRect(screen, x, y, w, h);
@@ -645,10 +704,33 @@ driver_base::driver_base(SDL_monitor_desc &m)
 void driver_base::set_video_mode(int flags)
 {
 	int depth = sdl_depth_of_video_depth(VIDEO_MODE_DEPTH);
+
+#ifdef EMSCRIPTEN
+	depth = 32; // always 32 is easier
+#else
 	if ((s = SDL_SetVideoMode(VIDEO_MODE_X, VIDEO_MODE_Y, depth,
 			SDL_HWSURFACE | flags)) == NULL)
 		return;
+#endif
+
+	if (REUSE_VIDEO_BUFFER) {
+		const int bytes_per_pixel = VIDEO_MODE_ROW_BYTES / VIDEO_MODE_X;
+		uint32 size_to_copy = VIDEO_MODE_X * bytes_per_pixel * VIDEO_MODE_Y;
+
+		// printf("driver_window checking browser_pixels %p != %p \n", (void *)browser_pixels, (void *)NULL);
+		// assert(browser_pixels == NULL);
+		browser_pixels = alloc_browser_pixels(size_to_copy);
+		assert(browser_pixels);
+		printf("driver_window allocated browser_pixels=%p\n", (void *)browser_pixels);
+		#ifdef EMSCRIPTEN
+		EM_ASM_({
+	  	Module.debugPointer($0);
+		}, browser_pixels);
+		#endif
+	}
+
 #ifdef ENABLE_VOSF
+	printf("using vosf\n");
 	the_host_buffer = (uint8 *)s->pixels;
 #endif
 	// set Mac screen global variabls
@@ -691,10 +773,15 @@ void driver_base::init()
 	}
 #endif
 	if (!use_vosf) {
+		printf("allocating the_buffer, the_buffer_copy\n");
 		// Allocate memory for frame buffer
 		the_buffer_size = (aligned_height + 2) * s->pitch;
 		the_buffer_copy = (uint8 *)calloc(1, the_buffer_size);
+#ifdef BROWSER_VIDEO
+		the_buffer = (uint8 *)malloc(the_buffer_size);
+#else
 		the_buffer = (uint8 *)vm_acquire_framebuffer(the_buffer_size);
+#endif
 		if (VM_MAP_FAILED == the_buffer) {
 			perror("Failed to allocate frame buffer for guest OS.");
 			abort();
@@ -721,9 +808,18 @@ void driver_base::adapt_to_video_mode() {
 	Screen_blitter_init(visualFormat, true, mac_depth_of_video_depth(VIDEO_MODE_DEPTH));
 
 	// Load gray ramp to 8->16/32 expand map
-	if (!IsDirectMode(mode))
-		for (int i=0; i<256; i++)
-			ExpandMap[i] = SDL_MapRGB(f, i, i, i);
+	// if (!IsDirectMode(mode))
+	// 	for (int i=0; i<256; i++)
+	// 		ExpandMap[i] = SDL_MapRGB(f, i, i, i);
+	if (!IsDirectMode(mode)) {
+		for (int i=0; i<256; i++) {
+			#ifdef EMSCRIPTEN
+					ExpandMap[i] = map_rgb(i, i, i, true);
+			#else
+					ExpandMap[i] = SDL_MapRGB(f, i, i, i);
+			#endif				
+		}
+	}
 
 
 	bool hardware_cursor = false;
@@ -743,7 +839,9 @@ void driver_base::adapt_to_video_mode() {
 	SDL_ShowCursor(hardware_cursor);
 
 	// Set window name/class
+	#ifndef EMSCRIPTEN
 	set_window_name(STR_WINDOW_TITLE);
+	#endif
 
 	// Everything went well
 	init_ok = true;
@@ -755,7 +853,9 @@ driver_base::~driver_base()
 	restore_mouse_accel();
 
 	if (s)
-		SDL_FreeSurface(s);
+		#ifndef EMSCRIPTEN
+			SDL_FreeSurface(s);
+		 #endif
 
 	// the_buffer shall always be mapped through vm_acquire_framebuffer()
 	if (the_buffer != VM_MAP_FAILED) {
@@ -792,8 +892,10 @@ void driver_base::update_palette(void)
 {
 	const VIDEO_MODE &mode = monitor.get_current_mode();
 
+	#ifndef EMSCRIPTEN
 	if ((int)VIDEO_MODE_DEPTH <= VIDEO_DEPTH_8BIT)
 		SDL_SetPalette(s, SDL_PHYSPAL, sdl_palette, 0, 256);
+	#endif
 }
 
 // Disable mouse acceleration
@@ -986,6 +1088,7 @@ bool VideoInit(bool classic)
 	mainBuffer.pageInfo = NULL;
 #endif
 
+	#ifndef EMSCRIPTEN
 	// Create Mutexes
 	if ((sdl_events_lock = SDL_CreateMutex()) == NULL)
 		return false;
@@ -993,6 +1096,7 @@ bool VideoInit(bool classic)
 		return false;
 	if ((frame_buffer_lock = SDL_CreateMutex()) == NULL)
 		return false;
+	#endif
 
 	// Init keycode translation
 	keycode_init();
@@ -1038,8 +1142,13 @@ bool VideoInit(bool classic)
 		default_width = (default_width / 8) * 8;
 	}
 
-	// Mac screen depth follows X depth
-	screen_depth = SDL_GetVideoInfo()->vfmt->BitsPerPixel;
+	#ifdef EMSCRIPTEN
+		screen_depth = 32;
+	#else
+		// Mac screen depth follows X depth
+		screen_depth = SDL_GetVideoInfo()->vfmt->BitsPerPixel;
+	#endif
+
 	int default_depth;
 	switch (screen_depth) {
 	case 8:
@@ -1385,7 +1494,11 @@ void SDL_monitor_desc::set_palette(uint8 *pal, int num_in)
 	if (!IsDirectMode(mode)) {
 		for (int i=0; i<256; i++) {
 			int c = i & (num_in-1); // If there are less than 256 colors, we repeat the first entries (this makes color expansion easier)
+			#ifdef EMSCRIPTEN
+			ExpandMap[i] = map_rgb(pal[c*3+0], pal[c*3+1], pal[c*3+2], true);
+			#else
 			ExpandMap[i] = SDL_MapRGB(drv->s->format, pal[c*3+0], pal[c*3+1], pal[c*3+2]);
+			#endif
 		}
 
 #ifdef ENABLE_VOSF
@@ -1734,9 +1847,11 @@ static void force_complete_window_refresh()
  *  SDL event handling
  */
 
+#define SDL_N_EVENTS_PER_HANDLER 1
+
 static void handle_events(void)
 {
-	SDL_Event events[10];
+	SDL_Event events[SDL_N_EVENTS_PER_HANDLER];
 	const int n_max_events = sizeof(events) / sizeof(events[0]);
 	int n_events;
 
@@ -1860,6 +1975,204 @@ static void handle_events(void)
 	}
 }
 
+static int sdl_fake_kc_decode(int kc)
+{
+	switch (kc) {
+	case 65: return 0x00;
+	case 66: return 0x0b;
+	case 67: return 0x08;
+	case 68: return 0x02;
+	case 69: return 0x0e;
+	case 70: return 0x03;
+	case 71: return 0x05;
+	case 72: return 0x04;
+	case 73: return 0x22;
+	case 74: return 0x26;
+	case 75: return 0x28;
+	case 76: return 0x25;
+	case 77: return 0x2e;
+	case 78: return 0x2d;
+	case 79: return 0x1f;
+	case 80: return 0x23;
+	case 81: return 0x0c;
+	case 82: return 0x0f;
+	case 83: return 0x01;
+	case 84: return 0x11;
+	case 85: return 0x20;
+	case 86: return 0x09;
+	case 87: return 0x0d;
+	case 88: return 0x07;
+	case 89: return 0x10;
+	case 90: return 0x06;
+
+	case 49: /*case SDLK_EXCLAIM:*/ return 0x12;
+	case 50: /*case SDLK_AT:*/ return 0x13;
+	case 51: /*case SDLK_HASH:*/ return 0x14;
+	case 52: /*case SDLK_DOLLAR:*/ return 0x15;
+	case 53: return 0x17;
+	case 54: return 0x16;
+	case 55: return 0x1a;
+	case 56: return 0x1c;
+	case 57: return 0x19;
+	case 48: return 0x1d;
+
+	case 192: return 0x0a;
+	case 189: /*case SDLK_UNDERSCORE:*/ return 0x1b;
+	case 187: /*case SDLK_PLUS:*/ return 0x18;
+	case 219: return 0x21;
+	case 221: return 0x1e;
+	case 220: return 0x2a;
+	case 186: /*case SDLK_COLON:*/ return 0x29;
+	case 222: /*case SDLK_QUOTEDBL:*/ return 0x27;
+	case 188: /*case SDLK_LESS:*/ return 0x2b;
+	case 190: /*case SDLK_GREATER:*/ return 0x2f;
+	case 191: /*case SDLK_QUESTION:*/ return 0x2c;
+
+	case 9: return 0x30;
+	case 13: return 0x24;
+	case 32: return 0x31;
+	case 8: return 0x33;
+
+	// case SDLK_DELETE: return 0x75;
+	// case SDLK_INSERT: return 0x72;
+	// case SDLK_HOME: case SDLK_HELP: return 0x73;
+	// case SDLK_END: return 0x77;
+	// case SDLK_PAGEUP: return 0x74;
+	// case SDLK_PAGEDOWN: return 0x79;
+
+	case 17: return 0x36;
+	// case SDLK_RCTRL: return 0x36;
+	case 16: return 0x38;
+	// case SDLK_RSHIFT: return 0x38;
+// if mac
+	case 18: return 0x3a;
+	// case SDLK_RALT: return 0x3a;
+	case 91: return 0x37;
+	case 93: return 0x37;
+// else
+	// case SDLK_LALT: return 0x37;
+	// case SDLK_RALT: return 0x37;
+	// case SDLK_LMETA: return 0x3a;
+	// case SDLK_RMETA: return 0x3a;
+// endif
+	// case SDLK_LSUPER: return 0x3a; // "Windows" key
+	// case SDLK_RSUPER: return 0x3a;
+	// case SDLK_MENU: return 0x32;
+	// case SDLK_CAPSLOCK: return 0x39;
+	// case SDLK_NUMLOCK: return 0x47;
+
+	case 38: return 0x3e;
+	case 40: return 0x3d;
+	case 37: return 0x3b;
+	case 39: return 0x3c;
+
+	case 27:  return 0x35;
+
+	// case SDLK_F1: return 0x7a;
+	// case SDLK_F2: return 0x78;
+	// case SDLK_F3: return 0x63;
+	// case SDLK_F4: return 0x76;
+	// case SDLK_F5: return 0x60;
+	// case SDLK_F6: return 0x61;
+	// case SDLK_F7: return 0x62;
+	// case SDLK_F8: return 0x64;
+	// case SDLK_F9: return 0x65;
+	// case SDLK_F10: return 0x6d;
+	// case SDLK_F11: return 0x67;
+	// case SDLK_F12: return 0x6f;
+
+	// case SDLK_PRINT: return 0x69;
+	// case SDLK_SCROLLOCK: return 0x6b;
+	// case SDLK_PAUSE: return 0x71;
+
+	// case SDLK_KP0: return 0x52;
+	// case SDLK_KP1: return 0x53;
+	// case SDLK_KP2: return 0x54;
+	// case SDLK_KP3: return 0x55;
+	// case SDLK_KP4: return 0x56;
+	// case SDLK_KP5: return 0x57;
+	// case SDLK_KP6: return 0x58;
+	// case SDLK_KP7: return 0x59;
+	// case SDLK_KP8: return 0x5b;
+	// case SDLK_KP9: return 0x5c;
+	// case SDLK_KP_PERIOD: return 0x41;
+	// case SDLK_KP_PLUS: return 0x45;
+	// case SDLK_KP_MINUS: return 0x4e;
+	// case SDLK_KP_MULTIPLY: return 0x43;
+	// case SDLK_KP_DIVIDE: return 0x4b;
+	// case SDLK_KP_ENTER: return 0x4c;
+	// case SDLK_KP_EQUALS: return 0x51;
+	}
+	printf("Unhandled keycode: %d\n", kc);
+	return -1;
+}
+
+static void sdl_fake_read_input() {
+	#ifdef EMSCRIPTEN
+	int lock = EM_ASM_INT_V({
+			return Module.acquireInputLock();
+		});
+	if (lock) {
+		int mouse_button_state = EM_ASM_INT_V({
+			return Module.getInputValue(Module.InputBufferAddresses.mouseButtonStateAddr);
+		});
+
+		if (mouse_button_state > -1) {
+			if (mouse_button_state == 0) {
+				ADBMouseUp(0);
+			} else {
+				ADBMouseDown(0);
+			}
+		}
+
+		int has_mouse_move = EM_ASM_INT_V({
+			return Module.getInputValue(Module.InputBufferAddresses.mouseMoveFlagAddr);
+		});
+		if (has_mouse_move) {
+			int dx = EM_ASM_INT_V({
+				return Module.getInputValue(Module.InputBufferAddresses.mouseMoveXDeltaAddr);
+			});
+
+			int dy = EM_ASM_INT_V({
+				return Module.getInputValue(Module.InputBufferAddresses.mouseMoveYDeltaAddr);
+			});
+
+			// printf("mousemove %d %d\n", dx, dy);
+			// HACK
+			// TODO make sure mouse move is flagged correctly
+			if (dx > 0 && dy > 0) {
+				drv->mouse_moved(dx, dy);
+			}
+		}
+
+		int has_key_event = EM_ASM_INT_V({
+			return Module.getInputValue(Module.InputBufferAddresses.keyEventFlagAddr);
+		});
+		if (has_key_event) {
+			int keycode = EM_ASM_INT_V({
+				return Module.getInputValue(Module.InputBufferAddresses.keyCodeAddr);
+			});
+
+			int keystate = EM_ASM_INT_V({
+				return Module.getInputValue(Module.InputBufferAddresses.keyStateAddr);
+			});
+
+			// printf("keyevent %d %d\n", keycode, keystate);
+			int adbkeycode = sdl_fake_kc_decode(keycode);
+			if (keystate == 0) {
+				ADBKeyUp(adbkeycode);
+			} else {
+				ADBKeyDown(adbkeycode);
+			}
+
+		}
+
+		EM_ASM({
+			Module.releaseInputLock();
+		});
+	}
+	#endif
+}
 
 /*
  *  Window display update
@@ -1868,6 +2181,8 @@ static void handle_events(void)
 // Static display update (fixed frame rate, but incremental)
 static void update_display_static(driver_base *drv)
 {
+	printf("update_display_static\n");
+
 	// Incremental update code
 	int wide = 0, high = 0;
 	uint32 x1, x2, y1, y2;
@@ -1932,9 +2247,11 @@ static void update_display_static(driver_base *drv)
 			// Update copy of the_buffer
 			if (high && wide) {
 
+				#ifndef EMSCRIPTEN
 				// Lock surface, if required
 				if (SDL_MUSTLOCK(drv->s))
 					SDL_LockSurface(drv->s);
+				#endif
 
 				// Blit to screen surface
 				int si = y1 * src_bytes_per_row + (x1 / pixels_per_byte);
@@ -1946,12 +2263,14 @@ static void update_display_static(driver_base *drv)
 					di += dst_bytes_per_row;
 				}
 
+				#ifndef EMSCRIPTEN
 				// Unlock surface, if required
 				if (SDL_MUSTLOCK(drv->s))
 					SDL_UnlockSurface(drv->s);
 
 				// Refresh display
 				SDL_UpdateRect(drv->s, x1, y1, wide, high);
+				#endif
 			}
 
 		} else {
@@ -2019,6 +2338,56 @@ static void update_display_static_bbox(driver_base *drv)
 {
 	const VIDEO_MODE &mode = drv->mode;
 
+	#ifdef EMSCRIPTEN
+	// Update the surface from Mac screen
+	const int bytes_per_row = VIDEO_MODE_ROW_BYTES;
+	const int bytes_per_pixel = bytes_per_row / VIDEO_MODE_X;
+	const int dst_bytes_per_row = drv->s->pitch;
+	uint32 size_to_copy = VIDEO_MODE_X * bytes_per_pixel * VIDEO_MODE_Y;
+
+	// int x, y;
+	// for (y = 0; y < VIDEO_MODE_Y; y += VIDEO_MODE_Y) {
+	// 	int h = VIDEO_MODE_Y;
+	// 	if (h > VIDEO_MODE_Y - y)
+	// 		h = VIDEO_MODE_Y - y;
+	// 	for (x = 0; x < VIDEO_MODE_X; x += VIDEO_MODE_X) {
+	// 		int w = VIDEO_MODE_X;
+	// 		if (w > VIDEO_MODE_X - x)
+	// 			w = VIDEO_MODE_X - x;
+	// 		const int xs = w * bytes_per_pixel;
+	// 		const int xb = x * bytes_per_pixel;
+	// 		for (int j = y; j < (y + h); j++) {
+	// 			const int yb = j * bytes_per_row;
+	// 			const int dst_yb = j * dst_bytes_per_row;
+	// 			memcmp(&the_buffer[yb + xb], &the_buffer_copy[yb + xb], xs);
+	// 			memcpy(&the_buffer_copy[yb + xb], &the_buffer[yb + xb], xs);
+	// 			Screen_blit((uint8 *)pixels + dst_yb + xb, the_buffer + yb + xb, xs);
+	// 		}
+	// 	}
+	// }
+
+	if (REUSE_VIDEO_BUFFER) {
+		// uint8 *browser_pixels = drv->browser_pixels;
+
+	// printf("Screen_blit from the_buffer=%p to browser_pixels=%p of size=%u depth=%d\n",(void *)the_buffer, (void *)browser_pixels, size_to_copy, VIDEO_MODE_DEPTH);
+
+		EM_ASM_({
+	  	Module.summarizeBuffer($0, $1, $2, $3);
+		}, the_buffer, VIDEO_MODE_X, VIDEO_MODE_Y, 32);
+		assert(browser_pixels);
+		Screen_blit((uint8 *)browser_pixels, the_buffer, size_to_copy);
+		EM_ASM_({
+	  	Module.blit($0, $1, $2, $3, $4);
+		}, browser_pixels, VIDEO_MODE_X, VIDEO_MODE_Y, 32, !IsDirectMode(mode));
+	} else {
+		uint8 *pixels = (uint8 *)alloca(sizeof(uint8) * size_to_copy);
+		Screen_blit((uint8 *)pixels, the_buffer, size_to_copy);
+		EM_ASM_({
+	  	Module.blit($0, $1, $2, $3, $4);
+		}, pixels, VIDEO_MODE_X, VIDEO_MODE_Y, 32, !IsDirectMode(mode));
+	}
+#else
+
 	// Allocate bounding boxes for SDL_UpdateRects()
 	const uint32 N_PIXELS = 64;
 	const uint32 n_x_boxes = (VIDEO_MODE_X + N_PIXELS - 1) / N_PIXELS;
@@ -2071,6 +2440,7 @@ static void update_display_static_bbox(driver_base *drv)
 	// Refresh display
 	if (nr_boxes)
 		SDL_UpdateRects(drv->s, nr_boxes, boxes);
+#endif
 }
 
 
@@ -2206,8 +2576,12 @@ static void VideoRefreshInit(void)
 
 static inline void do_video_refresh(void)
 {
+	#ifdef EMSCRIPTEN
+	sdl_fake_read_input();
+	#else
 	// Handle SDL events
 	handle_events();
+	#endif
 
 	// Update display
 	video_refresh();

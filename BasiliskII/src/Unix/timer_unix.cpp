@@ -49,7 +49,7 @@ static inline void mach_current_time(tm_time_t &t) {
 }
 #endif
 
-
+#include <time.h>
 /*
  *  Return microseconds since boot (64 bit)
  */
@@ -61,7 +61,7 @@ void Microseconds(uint32 &hi, uint32 &lo)
 	tm_time_t t;
 	mach_current_time(t);
 	uint64 tl = (uint64)t.tv_sec * 1000000 + t.tv_nsec / 1000;
-#elif defined(HAVE_CLOCK_GETTIME)
+#elif HAVE_CLOCK_GETTIME
 	struct timespec t;
 	clock_gettime(CLOCK_REALTIME, &t);
 	uint64 tl = (uint64)t.tv_sec * 1000000 + t.tv_nsec / 1000;

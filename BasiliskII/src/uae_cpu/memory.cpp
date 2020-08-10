@@ -615,12 +615,12 @@ void memory_init(void)
 	// Limit RAM size to not overlap ROM
 	uint32 ram_size = RAMSize > ROMBaseMac ? ROMBaseMac : RAMSize;
 
-	RAMBaseDiff = (uintptr)RAMBaseHost - (uintptr)RAMBaseMac;
-	ROMBaseDiff = (uintptr)ROMBaseHost - (uintptr)ROMBaseMac;
+	RAMBaseDiff = (uintptr_t)RAMBaseHost - (uintptr_t)RAMBaseMac;
+	ROMBaseDiff = (uintptr_t)ROMBaseHost - (uintptr_t)ROMBaseMac;
 	if (TwentyFourBitAddressing)
-		FrameBaseDiff = (uintptr)MacFrameBaseHost - (uintptr)MacFrameBaseMac24Bit;
+		FrameBaseDiff = (uintptr_t)MacFrameBaseHost - (uintptr_t)MacFrameBaseMac24Bit;
 	else
-		FrameBaseDiff = (uintptr)MacFrameBaseHost - (uintptr)MacFrameBaseMac;
+		FrameBaseDiff = (uintptr_t)MacFrameBaseHost - (uintptr_t)MacFrameBaseMac;
 
 	// Map RAM, ROM and display
 	if (TwentyFourBitAddressing) {
