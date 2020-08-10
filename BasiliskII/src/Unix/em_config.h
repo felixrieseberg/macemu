@@ -15,10 +15,12 @@
 #define SIZEOF_SHORT 2
 #define SIZEOF_VOID_P 4
 #undef __MACH__
+#define __wasm__ 1
 #undef HAVE_CLOCK_GETTIME
 
 #define USE_CPU_EMUL_SERVICES 1
 #define EMSCRIPTEN 1
+#define NOFLAGS 1
 
 #undef AQUA
 #undef HAVE_FRAMEWORK_COREFOUNDATION

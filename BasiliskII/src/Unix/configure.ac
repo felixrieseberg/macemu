@@ -83,10 +83,10 @@ AC_ARG_WITH(gtk,             [  --with-gtk              use GTK user interface [
   [WANT_GTK="gtk2 gtk"])
 AC_ARG_WITH(mon,             [  --with-mon              use mon as debugger [default=yes]], [WANT_MON=$withval], [WANT_MON=yes])
 
-AC_ARG_WITH(bincue,   
+AC_ARG_WITH(bincue,
   AS_HELP_STRING([--with-bincue], [Allow cdrom image files in bin/cue mode]))
 
-AC_ARG_WITH(libvhd,   
+AC_ARG_WITH(libvhd,
   AS_HELP_STRING([--with-libvhd], [Enable VHD disk images]))
 
 AC_ARG_WITH(vdeplug,
@@ -94,7 +94,7 @@ AC_ARG_WITH(vdeplug,
   [],
   [with_vdeplug=yes])
 
-  
+
 dnl Cross Compiling results in 'guesses' being made about the target system. These defaults are oftetimes incorrect.
 dnl The following Environment variables allow you to configure the default guess value for each option in the configure script.
 AC_ARG_VAR(BII_CROSS_SOCKLEN_T, [  Whether sys/socket.h defines type socklen_t. [default=guessing no]])
@@ -399,7 +399,7 @@ AS_IF([test  "x$have_libvhd" = "xyes" ], [
 	   LIBS="$LIBS -lvhd"
 	   case $target_os in
 	   linux*)
-	   LIBS="$LIBS -luuid" 
+	   LIBS="$LIBS -luuid"
 	   esac
 	   AC_CHECK_LIB(vhd, vhd_open)
 	   AC_CHECK_LIB(vhd, vhd_io_read)
@@ -669,7 +669,7 @@ if test ! -z "$cross_compiling" && test "x$cross_compiling" != "xyes"; then
 else
 	AC_MSG_WARN([cross compiling: Disabling /dev/ptc test])
 fi
-	
+
 dnl (end of code from openssh-3.2.2p1 configure.ac)
 
 dnl Check for systems where POSIX-style non-blocking I/O (O_NONBLOCK)
@@ -783,7 +783,7 @@ freebsd*)
   DEFINES="$DEFINES -DBSD_COMP"
   CXXFLAGS="$CXXFLAGS -fpermissive"
   dnl Check for the CAM library
-  AC_CHECK_LIB(cam, cam_open_btl, HAVE_LIBCAM=yes, HAVE_LIBCAM=no) 
+  AC_CHECK_LIB(cam, cam_open_btl, HAVE_LIBCAM=yes, HAVE_LIBCAM=no)
   if [[ "x$HAVE_LIBCAM" = "xno" ]]; then
     AC_MSG_WARN([Cannot find libcam for SCSI management, disabling SCSI support.])
   else
@@ -1072,7 +1072,7 @@ if [[ "x$have_mach_vm" = "xyes" ]]; then
     *yes) have_mach_vm=yes;;
     *no) have_mach_vm=no;;
   esac
-fi 
+fi
 AC_TRANSLATE_DEFINE(HAVE_MACH_VM, "$have_mach_vm",
   [Define if your system has a working vm_allocate()-based memory allocator.])
 
@@ -1180,7 +1180,7 @@ fi dnl HAVE_MMAP_VM
 dnl Check if we can modify the __PAGEZERO segment for use as Low Memory
 AC_CACHE_CHECK([whether __PAGEZERO can be Low Memory area 0x0000-0x2000],
   ac_cv_pagezero_hack, [
-  ac_cv_pagezero_hack=no 
+  ac_cv_pagezero_hack=no
   if AC_TRY_COMMAND([Darwin/testlmem.sh 0x2000]); then
     ac_cv_pagezero_hack=yes
     dnl might as well skip the test for mmap-able low memory
@@ -1411,7 +1411,7 @@ AC_TRANSLATE_DEFINE(HAVE_SIGCONTEXT_SUBTERFUGE, "$ac_cv_have_sigcontext_hack",
   [Define if we know a hack to replace siginfo_t->si_addr member.])
 
 
-dnl Resolve and set the proper sigsegv_recovery method... 
+dnl Resolve and set the proper sigsegv_recovery method...
 if [[ "x$ac_cv_have_mach_exceptions" = "xyes" ]]; then
   sigsegv_recovery=mach
 elif [[ "x$ac_cv_have_win32_exceptions" = "xyes" ]]; then
@@ -1423,7 +1423,7 @@ elif [[ "x$ac_cv_have_extended_signals" = "xyes" ]]; then
 elif [[ "x$ac_cv_have_sigcontext_hack" = "xyes" ]]; then
   sigsegv_recovery=sigcontext
 fi
-  
+
 dnl Check if we can ignore the fault (instruction skipping in SIGSEGV handler)
 AC_CACHE_CHECK([whether we can skip instruction in SIGSEGV handler],
   ac_cv_have_skip_instruction, [
@@ -1731,7 +1731,7 @@ dnl Enable JIT compiler, if possible.
 if [[ "x$WANT_JIT" = "xyes" -a "x$CAN_JIT" ]]; then
   JITSRCS="$JITSRCS ../uae_cpu/compiler/compemu_support.cpp ../uae_cpu/compiler/compemu_fpp.cpp compstbl.o cpustbl_nf.o"
   DEFINES="$DEFINES -DUSE_JIT -DUSE_JIT_FPU"
-  
+
   if [[ "x$WANT_JIT_DEBUG" = "xyes" ]]; then
     if [[ "x$WANT_MON" = "xyes" ]]; then
       DEFINES="$DEFINES -DJIT_DEBUG=1"

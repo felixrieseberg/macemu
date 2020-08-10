@@ -1,12 +1,19 @@
+source ./emenv.sh
+
+CFLAGS="-I/opt/X11/include -I em_config.h $EMFLAGS -g"
+CPPFLAGS="-I/opt/X11/include $EMFLAGS -g"
+LDFLAGS="-L/opt/X11/lib"
+DEFINES="-DDEBUG"
+
 if [[ -z "$macemujs_conf_native" ]]; then
-  echo "building for emscripten"
+  echo "Building for emscripten"
   # TODO: not use EMSCRIPTEN var
   export CC="emcc"
   export CXX="em++"
   export AR="emar"
   export EMSCRIPTEN=1
 else
-  echo "building for native"
+  echo "Building for native"
 fi
 
 ./autogen.sh \
@@ -32,4 +39,4 @@ else
     echo "#undef HAVE_LIBPOSIX4"
     echo "#undef HAVE_LIBRT"
   } >> ./config.h
-fi 
+fi
